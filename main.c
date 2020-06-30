@@ -17,6 +17,7 @@
 #define GPC_LOCK_ARGS_SIZE 57
 #define MAX_CELL 100000
 #define HASH_SIZE 32
+#define ONE_BATCH_SIZE 4096
 
 #define ERROR_ARGUMENTS_LEN -1
 #define ERROR_ENCODING -2
@@ -149,7 +150,7 @@ int verify_sig_no_input(mol_seg_t lock_bytes_seg, uint8_t *input_pubkey, uint8_t
     unsigned char witness[MAX_WITNESS_SIZE];
     uint64_t witness_len = MAX_WITNESS_SIZE;
     int ret = ckb_load_witness(witness, &witness_len, 0, 0, CKB_SOURCE_GROUP_INPUT);
-    // printf("123213      %lu", witness_len);
+
     if (ret != CKB_SUCCESS)
     {
         return ERROR_SYSCALL;
@@ -170,7 +171,7 @@ int verify_sig_no_input(mol_seg_t lock_bytes_seg, uint8_t *input_pubkey, uint8_t
     }
     blake2b_state blake2b_ctx;
     blake2b_init(&blake2b_ctx, BLAKE2B_BLOCK_SIZE);
-    //load all tx outputs.
+    //load outputs.
     size_t i = 0;
     uint64_t len = 0;
     for (i = 0; i < end; i++)
@@ -193,56 +194,44 @@ int verify_sig_no_input(mol_seg_t lock_bytes_seg, uint8_t *input_pubkey, uint8_t
         blake2b_update(&blake2b_ctx, output, len);
     }
     len = 0;
+
+    //load output_data.
+    for (i = 0; i < end; i++)
+    {
+        uint8_t temp[ONE_BATCH_SIZE];
+        len = ONE_BATCH_SIZE;
+        ret = ckb_load_cell_data(temp, &len, 0, i, CKB_SOURCE_OUTPUT);
+        if (ret == CKB_INDEX_OUT_OF_BOUND)
+        {
+            return ret;
+        }
+        if (ret != CKB_SUCCESS)
+        {
+            return ret;
+        }
+        uint64_t offset = (len > ONE_BATCH_SIZE) ? ONE_BATCH_SIZE : len;
+        blake2b_update(&blake2b_ctx, temp, offset);
+        while (offset < len)
+        {
+            uint64_t current_len = ONE_BATCH_SIZE;
+            ret = ckb_load_cell_data(temp, &current_len, offset, i, CKB_SOURCE_OUTPUT);
+            if (ret != CKB_SUCCESS)
+            {
+                return ret;
+            }
+            uint64_t current_read = (current_len > ONE_BATCH_SIZE) ? ONE_BATCH_SIZE : current_len;
+            blake2b_update(&blake2b_ctx, temp, current_read);
+            offset += current_read;
+        }
+    }
+
     // Clear lock field to zero, then digest the first witness
     memset((void *)(&lock_bytes_seg.ptr[9]), 0, 2 * SIGNATURE_SIZE);
     blake2b_update(&blake2b_ctx, (char *)&witness_len, sizeof(uint64_t));
     blake2b_update(&blake2b_ctx, witness, witness_len);
 
     uint8_t temp[MAX_WITNESS_SIZE];
-    // Digest same group witnesses
-    i = 1;
-    while (1)
-    {
-        len = MAX_WITNESS_SIZE;
-        ret = ckb_load_witness(temp, &len, 0, i, CKB_SOURCE_GROUP_INPUT);
-        if (ret == CKB_INDEX_OUT_OF_BOUND)
-        {
-            break;
-        }
-        if (ret != CKB_SUCCESS)
-        {
-            return ERROR_SYSCALL;
-        }
-        if (len > MAX_WITNESS_SIZE)
-        {
-            return ERROR_WITNESS_SIZE;
-        }
-        blake2b_update(&blake2b_ctx, (char *)&len, sizeof(uint64_t));
-        blake2b_update(&blake2b_ctx, temp, len);
-        i += 1;
-    }
-    // Digest witnesses that not covered by inputs
-    i = ckb_calculate_inputs_len();
-    while (1)
-    {
-        len = MAX_WITNESS_SIZE;
-        ret = ckb_load_witness(temp, &len, 0, i, CKB_SOURCE_INPUT);
-        if (ret == CKB_INDEX_OUT_OF_BOUND)
-        {
-            break;
-        }
-        if (ret != CKB_SUCCESS)
-        {
-            return ERROR_SYSCALL;
-        }
-        if (len > MAX_WITNESS_SIZE)
-        {
-            return ERROR_WITNESS_SIZE;
-        }
-        blake2b_update(&blake2b_ctx, (char *)&len, sizeof(uint64_t));
-        blake2b_update(&blake2b_ctx, temp, len);
-        i += 1;
-    }
+
     unsigned char message[BLAKE2B_BLOCK_SIZE];
     blake2b_final(&blake2b_ctx, message, BLAKE2B_BLOCK_SIZE);
 
