@@ -28,7 +28,7 @@ tx = DATA.read.sub("@FIB_CODE", bin_to_hex(script_binary))
 
 File.write("tx.json", tx)
 # commandline = "/Users/ZhiChunLu/prototype/GPC/ckb-standalone-debugger/bins/target/release/ckb-debugger --tx-file tx.json --script-group-type type -i 0 -e input"
-commandline = "../ckb-standalone-debugger/bins/target/release/ckb-debugger --tx-file tx.json --script-group-type type -i 0 -e input"
+commandline = "./ckb-standalone-debugger/bins/target/release/ckb-debugger --tx-file tx.json --script-group-type type -i 0 -e input"
 STDERR.puts "Executing: #{commandline}"
 exec(commandline)
 
@@ -47,7 +47,7 @@ __END__
         "output": {
           "capacity": "0x4b9f96b00",
           "lock": {
-            "args": "0x0064000000000000000000000000000000c6a8ae902ac272ea0ec6378f7ab8648f76979ce296a11bf182b0e952f6fcc685b43ae50e13951b78",
+            "args": "0x5b2f1664510024fd513cd4900819be7b0064000000000000000000000000000000c6a8ae902ac272ea0ec6378f7ab8648f76979ce296a11bf182b0e952f6fcc685b43ae50e13951b78",
             "code_hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
             "hash_type": "data"
           },
@@ -135,13 +135,13 @@ __END__
       {
         "capacity": "0x0",
         "lock": {
-          "args": "0x0164000000000000000000000000000000c6a8ae902ac272ea0ec6378f7ab8648f76979ce296a11bf182b0e952f6fcc685b43ae50e13951b78",
+          "args": "0x5b2f1664510024fd513cd4900819be7b0164000000000000000100000000000000c6a8ae902ac272ea0ec6378f7ab8648f76979ce296a11bf182b0e952f6fcc685b43ae50e13951b78",
           "code_hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
           "hash_type": "data"
         },
         "type": {
           "args": "0x",
-          "code_hash": "0x3982bfaca9cd36a652f7133ae47e2f446d543bac449d20a9f1e7f7a6fd484dc0",
+          "code_hash": "0x3be39e1f4f7e5cc37697112a324d0886362d551cacdbe82b7cee2c1ca7aa930f",
           "hash_type": "data"
         }
       }

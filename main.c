@@ -14,10 +14,12 @@
 #define MAX_WITNESS_SIZE 32768
 #define SCRIPT_SIZE 32768
 #define TEMP_SIZE 32768
-#define GPC_LOCK_ARGS_SIZE 57
+#define GPC_LOCK_ARGS_SIZE 73
 #define MAX_CELL 100000
 #define HASH_SIZE 32
 #define ONE_BATCH_SIZE 4096
+#define ID_SIZE 16
+#define LOCK_PREFIX_LENGTH 25
 
 #define ERROR_ARGUMENTS_LEN -1
 #define ERROR_ENCODING -2
@@ -43,6 +45,8 @@
 #define ERROR_HASH_TYPE_INCONSISTENT -66
 #define ERROR_NOUNCE_INCONSISTENT -67
 #define ERROR_FLAG_STATUS -68
+#define ERROR_ID_INCONSISTENT -69
+#define ERROR_LOCK_ID_INCONSISTENT -70
 
 int extract_witness_lock(uint8_t *witness, uint64_t len,
                          mol_seg_t *lock_bytes_seg)
@@ -75,7 +79,6 @@ int extract_script_arg(uint8_t *script, uint64_t len, mol_seg_t *args_bytes_seg)
     {
         return ERROR_ENCODING;
     }
-
     mol_seg_t args_seg = MolReader_Script_get_args(&script_seg);
     *args_bytes_seg = MolReader_Bytes_raw_bytes(&args_seg);
     if ((*args_bytes_seg).size != GPC_LOCK_ARGS_SIZE)
@@ -86,21 +89,24 @@ int extract_script_arg(uint8_t *script, uint64_t len, mol_seg_t *args_bytes_seg)
 }
 
 int parse_lock_args(unsigned char *lock_script, uint64_t script_len,
-                    uint8_t *status, uint64_t *lock_time,
+                    uint8_t *id, uint8_t *status, uint64_t *lock_time,
                     uint64_t *nounce, uint8_t *pubkey_A, uint8_t *pubkey_B)
 {
     mol_seg_t args_bytes_seg;
     int ret = extract_script_arg(lock_script, script_len, &args_bytes_seg);
+
     if (ret != CKB_SUCCESS)
     {
         return ERROR_ENCODING;
     }
     uint8_t *lock_arg = (uint8_t *)args_bytes_seg.ptr;
-    *status = lock_arg[0];
-    *lock_time = *(uint64_t *)&lock_arg[1];
-    *nounce = *(uint64_t *)&lock_arg[9];
-    memcpy(pubkey_A, &lock_arg[17], BLAKE160_SIZE);
-    memcpy(pubkey_B, &lock_arg[17 + BLAKE160_SIZE], BLAKE160_SIZE);
+
+    memcpy(id, lock_arg, ID_SIZE);
+    *status = lock_arg[16];
+    *lock_time = *(uint64_t *)&lock_arg[17];
+    *nounce = *(uint64_t *)&lock_arg[25];
+    memcpy(pubkey_A, &lock_arg[33], BLAKE160_SIZE);
+    memcpy(pubkey_B, &lock_arg[33 + BLAKE160_SIZE], BLAKE160_SIZE);
     return CKB_SUCCESS;
 }
 
@@ -165,7 +171,7 @@ int verify_sig_no_input(mol_seg_t lock_bytes_seg, uint8_t *input_pubkey, uint8_t
         return ERROR_ENCODING;
     }
 
-    if (lock_bytes_seg.size != 2 * SIGNATURE_SIZE + 9)
+    if (lock_bytes_seg.size != 2 * SIGNATURE_SIZE + LOCK_PREFIX_LENGTH)
     {
         return ERROR_ARGUMENTS_LEN;
     }
@@ -226,7 +232,7 @@ int verify_sig_no_input(mol_seg_t lock_bytes_seg, uint8_t *input_pubkey, uint8_t
     }
 
     // Clear lock field to zero, then digest the first witness
-    memset((void *)(&lock_bytes_seg.ptr[9]), 0, 2 * SIGNATURE_SIZE);
+    memset((void *)(&lock_bytes_seg.ptr[LOCK_PREFIX_LENGTH]), 0, 2 * SIGNATURE_SIZE);
     blake2b_update(&blake2b_ctx, (char *)&witness_len, sizeof(uint64_t));
     blake2b_update(&blake2b_ctx, witness, witness_len);
 
@@ -300,7 +306,7 @@ int verify_sig_all(mol_seg_t lock_bytes_seg, uint8_t *input_pubkey, uint8_t *sig
         return ERROR_ENCODING;
     }
 
-    if (lock_bytes_seg.size != 2 * SIGNATURE_SIZE + 9)
+    if (lock_bytes_seg.size != 2 * SIGNATURE_SIZE + LOCK_PREFIX_LENGTH)
     {
         return ERROR_ARGUMENTS_LEN;
     }
@@ -325,7 +331,7 @@ int verify_sig_all(mol_seg_t lock_bytes_seg, uint8_t *input_pubkey, uint8_t *sig
     blake2b_update(&blake2b_ctx, tx_hash, BLAKE2B_BLOCK_SIZE);
 
     // Clear lock field to zero, then digest the first witness
-    memset((void *)(&lock_bytes_seg.ptr[9]), 0, 2 * SIGNATURE_SIZE);
+    memset((void *)(&lock_bytes_seg.ptr[LOCK_PREFIX_LENGTH]), 0, 2 * SIGNATURE_SIZE);
     blake2b_update(&blake2b_ctx, (char *)&witness_len, sizeof(uint64_t));
     blake2b_update(&blake2b_ctx, witness, witness_len);
 
@@ -449,7 +455,6 @@ int main(int argc, char *argv[])
     {
         return ERROR_WITNESS_SIZE;
     }
-
     mol_seg_t lock_bytes_seg;
     ret = extract_witness_lock(witness, witness_len, &lock_bytes_seg);
     if (ret != 0)
@@ -457,17 +462,18 @@ int main(int argc, char *argv[])
         return ERROR_ENCODING;
     }
 
-    if (lock_bytes_seg.size != 2 * SIGNATURE_SIZE + 9)
+    if (lock_bytes_seg.size != 2 * SIGNATURE_SIZE + LOCK_PREFIX_LENGTH)
     {
         return ERROR_ARGUMENTS_LEN;
     }
 
+    uint8_t sig_A[SIGNATURE_SIZE], sig_B[SIGNATURE_SIZE], witness_id[ID_SIZE];
     uint8_t *gpc_witness = (uint8_t *)lock_bytes_seg.ptr;
-    uint8_t flag = gpc_witness[0];
-    uint64_t *nounce_witness = (uint64_t *)&gpc_witness[1];
-    uint8_t sig_A[SIGNATURE_SIZE], sig_B[SIGNATURE_SIZE];
-    memcpy(sig_A, &gpc_witness[9], SIGNATURE_SIZE);
-    memcpy(sig_B, &gpc_witness[9 + SIGNATURE_SIZE], SIGNATURE_SIZE);
+    memcpy(witness_id, gpc_witness, ID_SIZE);
+    uint8_t flag = gpc_witness[16];
+    uint64_t *nounce_witness = (uint64_t *)&gpc_witness[17];
+    memcpy(sig_A, &gpc_witness[25], SIGNATURE_SIZE);
+    memcpy(sig_B, &gpc_witness[25 + SIGNATURE_SIZE], SIGNATURE_SIZE);
 
     // load the args about lock script in input.
 
@@ -482,9 +488,10 @@ int main(int argc, char *argv[])
     {
         return ERROR_SCRIPT_TOO_LONG;
     }
-    uint8_t input_status = 0, input_pubkey_A[BLAKE160_SIZE], input_pubkey_B[BLAKE160_SIZE];
+    uint8_t input_status = 0, input_pubkey_A[BLAKE160_SIZE], input_pubkey_B[BLAKE160_SIZE], input_id[ID_SIZE];
     uint64_t input_lock_time = 0, input_nounce = 0;
-    ret = parse_lock_args(input_lock_script, input_script_len, &input_status,
+
+    ret = parse_lock_args(input_lock_script, input_script_len, input_id, &input_status,
                           &input_lock_time, &input_nounce, input_pubkey_A, input_pubkey_B);
     if (ret != CKB_SUCCESS)
     {
@@ -513,7 +520,6 @@ int main(int argc, char *argv[])
 
     //verify the type script is same!!
 
-    //Output: capacity (users check), lock (), type(checked).
     unsigned char output_type_script_hash[HASH_SIZE];
     script_hash_len = HASH_SIZE;
     size_t i = 0;
@@ -545,6 +551,13 @@ int main(int argc, char *argv[])
             return ERROR_TYPE_SCRIPT_HASH_INCONSISTENT;
         }
         i++;
+    }
+
+    // just compare the witness_id and input_id are same.
+
+    if (memcmp(input_id, witness_id, ID_SIZE) != 0)
+    {
+        return ERROR_ID_INCONSISTENT;
     }
 
     // four cases:
@@ -581,9 +594,9 @@ int main(int argc, char *argv[])
         {
             return ERROR_SCRIPT_TOO_LONG;
         }
-        uint8_t output_status = 0, output_pubkey_A[BLAKE160_SIZE], output_pubkey_B[BLAKE160_SIZE];
+        uint8_t output_status = 0, output_pubkey_A[BLAKE160_SIZE], output_pubkey_B[BLAKE160_SIZE], output_id[ID_SIZE];
         uint64_t output_lock_time = 0, output_nounce = 0;
-        ret = parse_lock_args(output_lock_script, output_script_len, &output_status,
+        ret = parse_lock_args(output_lock_script, output_script_len, output_id, &output_status,
                               &output_lock_time, &output_nounce, output_pubkey_A, output_pubkey_B);
         if (output_nounce <= input_nounce && output_nounce != 0)
         {
@@ -603,6 +616,12 @@ int main(int argc, char *argv[])
         {
             return ret;
         }
+        // Verify the output id is same as the input id.
+        if (memcmp(input_id, output_id, ID_SIZE != 0))
+        {
+            return ERROR_LOCK_ID_INCONSISTENT;
+        }
+
         // Lets verify the signature (no-input signature).
         ret = verify_sig_no_input(lock_bytes_seg, input_pubkey_A, sig_A, 1);
         if (ret != CKB_SUCCESS)
