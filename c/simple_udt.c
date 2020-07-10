@@ -36,31 +36,36 @@
 #define ERROR_AMOUNT -52
 
 // We will leverage gcc's 128-bit integer extension here for number crunching.
-typedef unsigned __int128 uint128_t;
+// typedef unsigned __int64 uint64_t;
 
-int main() {
+int main()
+{
   // First, let's load current running script, so we can extract owner lock
   // script hash from script args.
   unsigned char script[SCRIPT_SIZE];
   uint64_t len = SCRIPT_SIZE;
   int ret = ckb_load_script(script, &len, 0);
-  if (ret != CKB_SUCCESS) {
+  if (ret != CKB_SUCCESS)
+  {
     return ERROR_SYSCALL;
   }
-  if (len > SCRIPT_SIZE) {
+  if (len > SCRIPT_SIZE)
+  {
     return ERROR_SCRIPT_TOO_LONG;
   }
   mol_seg_t script_seg;
   script_seg.ptr = (uint8_t *)script;
   script_seg.size = len;
 
-  if (MolReader_Script_verify(&script_seg, false) != MOL_OK) {
+  if (MolReader_Script_verify(&script_seg, false) != MOL_OK)
+  {
     return ERROR_ENCODING;
   }
 
   mol_seg_t args_seg = MolReader_Script_get_args(&script_seg);
   mol_seg_t args_bytes_seg = MolReader_Bytes_raw_bytes(&args_seg);
-  if (args_bytes_seg.size != BLAKE2B_BLOCK_SIZE) {
+  if (args_bytes_seg.size != BLAKE2B_BLOCK_SIZE)
+  {
     return ERROR_ARGUMENTS_LEN;
   }
 
@@ -68,7 +73,8 @@ int main() {
   // current transaction to see if any unlocked cell uses owner lock.
   int owner_mode = 0;
   size_t i = 0;
-  while (1) {
+  while (1)
+  {
     uint8_t buffer[BLAKE2B_BLOCK_SIZE];
     uint64_t len = BLAKE2B_BLOCK_SIZE;
     // There are 2 points worth mentioning here:
@@ -82,16 +88,20 @@ int main() {
     // here.
     ret = ckb_checked_load_cell_by_field(buffer, &len, 0, i, CKB_SOURCE_INPUT,
                                          CKB_CELL_FIELD_LOCK_HASH);
-    if (ret == CKB_INDEX_OUT_OF_BOUND) {
+    if (ret == CKB_INDEX_OUT_OF_BOUND)
+    {
       break;
     }
-    if (ret != CKB_SUCCESS) {
+    if (ret != CKB_SUCCESS)
+    {
       return ret;
     }
-    if (len != BLAKE2B_BLOCK_SIZE) {
+    if (len != BLAKE2B_BLOCK_SIZE)
+    {
       return ERROR_ENCODING;
     }
-    if (memcmp(buffer, args_bytes_seg.ptr, BLAKE2B_BLOCK_SIZE) == 0) {
+    if (memcmp(buffer, args_bytes_seg.ptr, BLAKE2B_BLOCK_SIZE) == 0)
+    {
       owner_mode = 1;
       break;
     }
@@ -100,7 +110,8 @@ int main() {
 
   // When owner mode is triggered, we won't perform any checks here, the owner
   // is free to make any changes here, including token issurance, minting, etc.
-  if (owner_mode) {
+  if (owner_mode)
+  {
     return CKB_SUCCESS;
   }
 
@@ -108,11 +119,12 @@ int main() {
   // the sum of all input tokens is not smaller than the sum of all output
   // tokens. First, let's loop through all input cells containing current UDTs,
   // and gather the sum of all input tokens.
-  uint128_t input_amount = 0;
+  uint64_t input_amount = 0;
   i = 0;
-  while (1) {
-    uint128_t current_amount = 0;
-    len = 16;
+  while (1)
+  {
+    uint64_t current_amount = 0;
+    len = 8;
     // The implementation here does not require that the transaction only
     // contains UDT cells for the current UDT type. It's perfectly fine to mix
     // the cells for multiple different types of UDT together in one
@@ -140,19 +152,23 @@ int main() {
                              CKB_SOURCE_GROUP_INPUT);
     // When `CKB_INDEX_OUT_OF_BOUND` is reached, we know we have iterated
     // through all cells of current type.
-    if (ret == CKB_INDEX_OUT_OF_BOUND) {
+    if (ret == CKB_INDEX_OUT_OF_BOUND)
+    {
       break;
     }
-    if (ret != CKB_SUCCESS) {
+    if (ret != CKB_SUCCESS)
+    {
       return ret;
     }
-    if (len != 16) {
+    if (len != 8)
+    {
       return ERROR_ENCODING;
     }
     input_amount += current_amount;
     // Like any serious smart contract out there, we will need to check for
     // overflows.
-    if (input_amount < current_amount) {
+    if (input_amount < current_amount)
+    {
       return ERROR_OVERFLOWING;
     }
     i += 1;
@@ -160,29 +176,34 @@ int main() {
 
   // With the sum of all input UDT tokens gathered, let's now iterate through
   // output cells to grab the sum of all output UDT tokens.
-  uint128_t output_amount = 0;
+  uint64_t output_amount = 0;
   i = 0;
-  while (1) {
-    uint128_t current_amount = 0;
-    len = 16;
+  while (1)
+  {
+    uint64_t current_amount = 0;
+    len = 8;
     // Similar to the above code piece, we are also looping through output cells
     // with the same script as current running script here by using
     // `CKB_SOURCE_GROUP_OUTPUT`.
     ret = ckb_load_cell_data((uint8_t *)&current_amount, &len, 0, i,
                              CKB_SOURCE_GROUP_OUTPUT);
-    if (ret == CKB_INDEX_OUT_OF_BOUND) {
+    if (ret == CKB_INDEX_OUT_OF_BOUND)
+    {
       break;
     }
-    if (ret != CKB_SUCCESS) {
+    if (ret != CKB_SUCCESS)
+    {
       return ret;
     }
-    if (len != 16) {
+    if (len != 8)
+    {
       return ERROR_ENCODING;
     }
     output_amount += current_amount;
     // Like any serious smart contract out there, we will need to check for
     // overflows.
-    if (output_amount < current_amount) {
+    if (output_amount < current_amount)
+    {
       return ERROR_OVERFLOWING;
     }
     i += 1;
@@ -190,7 +211,8 @@ int main() {
 
   // When both value are gathered, we can perform the final check here to
   // prevent non-authorized token issurance.
-  if (input_amount < output_amount) {
+  if (input_amount != output_amount)
+  {
     return ERROR_AMOUNT;
   }
   return CKB_SUCCESS;
