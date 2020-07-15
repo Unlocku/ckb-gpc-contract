@@ -602,6 +602,12 @@ int main(int argc, char *argv[])
         {
             return ERROR_NOUNCE_INVALID;
         }
+
+        if (memcmp(input_id, output_id, ID_SIZE) != 0)
+        {
+            return ERROR_ID_INCONSISTENT;
+        }
+
         if (output_status != 1)
         {
             return ERROR_STATUS_INVALID;
