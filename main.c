@@ -440,6 +440,48 @@ int printf_hex_string(unsigned char *str, int len)
     return 0;
 }
 
+int check_type_script(unsigned char *input_type_script_hash, size_t end)
+{
+    unsigned char output_type_script_hash[HASH_SIZE];
+    uint64_t script_hash_len = HASH_SIZE;
+    size_t i = 0;
+    int ret = 0;
+    while (1)
+    {
+        ret = ckb_load_cell_by_field(output_type_script_hash, &script_hash_len, 0, i, CKB_SOURCE_OUTPUT, CKB_CELL_FIELD_TYPE_HASH);
+        if (ret == CKB_INDEX_OUT_OF_BOUND)
+        {
+            break;
+        }
+        if (ret == 2)
+        {
+            for (int i = 0; i < HASH_SIZE; i++)
+            {
+                output_type_script_hash[i] = 0;
+            }
+        }
+        else if (ret != CKB_SUCCESS)
+        {
+            return ret;
+        }
+        else if (script_hash_len != HASH_SIZE)
+        {
+            return ERROR_SYSCALL;
+        }
+        // printf_hex_string(output_type_script_hash, HASH_SIZE);
+        if (memcmp(input_type_script_hash, output_type_script_hash, HASH_SIZE) != 0)
+        {
+            return ERROR_TYPE_SCRIPT_HASH_INCONSISTENT;
+        }
+        i++;
+        if (i >= end)
+        {
+            break;
+        }
+    }
+    return CKB_SUCCESS;
+}
+
 int main(int argc, char *argv[])
 {
     // load the witness!!!
@@ -498,6 +540,7 @@ int main(int argc, char *argv[])
         return ERROR_ENCODING;
     }
 
+    // load type script hash.
     unsigned char input_type_script_hash[HASH_SIZE];
     uint64_t script_hash_len = HASH_SIZE;
     ret = ckb_load_cell_by_field(input_type_script_hash, &script_hash_len, 0, 0, CKB_SOURCE_INPUT, CKB_CELL_FIELD_TYPE_HASH);
@@ -520,39 +563,6 @@ int main(int argc, char *argv[])
 
     //verify the type script is same!!
 
-    unsigned char output_type_script_hash[HASH_SIZE];
-    script_hash_len = HASH_SIZE;
-    size_t i = 0;
-    while (1)
-    {
-        ret = ckb_load_cell_by_field(output_type_script_hash, &script_hash_len, 0, i, CKB_SOURCE_OUTPUT, CKB_CELL_FIELD_TYPE_HASH);
-        if (ret == CKB_INDEX_OUT_OF_BOUND)
-        {
-            break;
-        }
-        if (ret == 2)
-        {
-            for (int i = 0; i < HASH_SIZE; i++)
-            {
-                output_type_script_hash[i] = 0;
-            }
-        }
-        else if (ret != CKB_SUCCESS)
-        {
-            return ret;
-        }
-        else if (script_hash_len != HASH_SIZE)
-        {
-            return ERROR_SYSCALL;
-        }
-        // printf_hex_string(output_type_script_hash, HASH_SIZE);
-        if (memcmp(input_type_script_hash, output_type_script_hash, HASH_SIZE) != 0)
-        {
-            return ERROR_TYPE_SCRIPT_HASH_INCONSISTENT;
-        }
-        i++;
-    }
-
     // just compare the witness_id and input_id are same.
 
     if (memcmp(input_id, witness_id, ID_SIZE) != 0)
@@ -574,6 +584,12 @@ int main(int argc, char *argv[])
             return ret;
         }
         ret = verify_sig_all(lock_bytes_seg, input_pubkey_B, sig_B);
+        if (ret != CKB_SUCCESS)
+        {
+            return ret;
+        }
+
+        ret = check_type_script(input_type_script_hash, 2);
         if (ret != CKB_SUCCESS)
         {
             return ret;
@@ -606,6 +622,12 @@ int main(int argc, char *argv[])
         if (memcmp(input_id, output_id, ID_SIZE) != 0)
         {
             return ERROR_ID_INCONSISTENT;
+        }
+
+        ret = check_type_script(input_type_script_hash, 1);
+        if (ret != CKB_SUCCESS)
+        {
+            return ret;
         }
 
         if (output_status != 1)
@@ -660,6 +682,13 @@ int main(int argc, char *argv[])
         {
             return ERROR_NOUNCE_INCONSISTENT;
         }
+
+        ret = check_type_script(input_type_script_hash, 2);
+        if (ret != CKB_SUCCESS)
+        {
+            return ret;
+        }
+        
         // Lets verify the signature. (no-input signature.)
         ret = verify_sig_no_input(lock_bytes_seg, input_pubkey_A, sig_A, 2);
         if (ret != CKB_SUCCESS)
