@@ -1,3 +1,37 @@
+// # gpc-contract
+//
+// This is a lock script that serves multiple purposes:
+//
+// You can acquire the detailed info in https://talk.nervos.org/t/a-generic-payment-channel-construction-and-its-composability/4697.
+//
+// Where the components are of the following format:
+//
+// lock.args: ID | Status | Timeout | Nounce | Pubkey_A | Pubkey_B | ...
+//
+// +-------------+------------------------------------+-------+
+// |             |           Description              | Bytes |
+// +-------------+------------------------------------+-------+
+// | ID          | The id the channel.                |    16 |
+// | Status      | The status of the lock.            |     1 |
+// | Timeout     | The timeout of the lock.           |     8 |
+// | Nounce      | The version of the lock.           |     8 |
+// | Pubkey_A    | The blake160 hash of party A.      |    20 |
+// | Pubkey_B    | The blake160 hash of party B.      |    20 |
+// +-------------+------------------------------------+-------+
+//
+// witness.lock: ID | Flag | Nounce | Signature1 | Signature2 | ...
+//
+// +-------------+------------------------------------+-------+
+// |             |           Description              | Bytes |
+// +-------------+------------------------------------+-------+
+// | ID          | The id the channel.                |    16 |
+// | Flag        | The flag of the witness.           |     1 |
+// | Nounce      | The version of the witnesss.       |     8 |
+// | Signature1  | Signature1.                        |    65 |
+// | Signature2  | Signature2.                        |    65 |
+// +-------------+------------------------------------+-------+
+//
+// Note that the above structures are inconsistent with the one in the link.
 #include "blake2b.h"
 #include "blockchain.h"
 #include "ckb_dlfcn.h"
@@ -17,6 +51,10 @@
 #define GPC_LOCK_ARGS_SIZE 73
 #define MAX_CELL 100000
 #define HASH_SIZE 32
+#define NOUNCE_SIZE 8
+#define TIMEOUT_SIZE 8
+#define FLAG_SIZE 1
+#define STATUS_SIZE 1
 #define ONE_BATCH_SIZE 4096
 #define ID_SIZE 16
 #define LOCK_PREFIX_LENGTH 25
@@ -88,6 +126,7 @@ int extract_script_arg(uint8_t *script, uint64_t len, mol_seg_t *args_bytes_seg)
     return CKB_SUCCESS;
 }
 
+// Parse the lock script args into id, status, lock_time, nounce and pubkey A,B.
 int parse_lock_args(unsigned char *lock_script, uint64_t script_len,
                     uint8_t *id, uint8_t *status, uint64_t *lock_time,
                     uint64_t *nounce, uint8_t *pubkey_A, uint8_t *pubkey_B)
@@ -102,21 +141,22 @@ int parse_lock_args(unsigned char *lock_script, uint64_t script_len,
     uint8_t *lock_arg = (uint8_t *)args_bytes_seg.ptr;
 
     memcpy(id, lock_arg, ID_SIZE);
-    *status = lock_arg[16];
-    *lock_time = *(uint64_t *)&lock_arg[17];
-    *nounce = *(uint64_t *)&lock_arg[25];
-    memcpy(pubkey_A, &lock_arg[33], BLAKE160_SIZE);
-    memcpy(pubkey_B, &lock_arg[33 + BLAKE160_SIZE], BLAKE160_SIZE);
+    *status = lock_arg[ID_SIZE];
+    *lock_time = *(uint64_t *)&lock_arg[ID_SIZE + STATUS_SIZE];
+    *nounce = *(uint64_t *)&lock_arg[ID_SIZE + STATUS_SIZE + TIMEOUT_SIZE];
+    memcpy(pubkey_A, &lock_arg[ID_SIZE + STATUS_SIZE + TIMEOUT_SIZE + NOUNCE_SIZE], BLAKE160_SIZE);
+    memcpy(pubkey_B, &lock_arg[ID_SIZE + STATUS_SIZE + TIMEOUT_SIZE + NOUNCE_SIZE + BLAKE160_SIZE], BLAKE160_SIZE);
     return CKB_SUCCESS;
 }
 
+// Check the input and output lock args are consistent.
 int verify_lock_attrs(uint8_t *input_lock_script, uint64_t input_len, uint8_t *output_lock_script, uint64_t output_len)
 {
     mol_seg_t script_seg;
     script_seg.ptr = (uint8_t *)input_lock_script;
     script_seg.size = input_len;
     mol_seg_t input_code_hash = MolReader_Script_get_code_hash(&script_seg);
-    if (input_code_hash.size != 32)
+    if (input_code_hash.size != BLAKE2B_BLOCK_SIZE)
     {
         return ERROR_ENCODING;
     }
@@ -129,7 +169,7 @@ int verify_lock_attrs(uint8_t *input_lock_script, uint64_t input_len, uint8_t *o
     script_seg.ptr = (uint8_t *)output_lock_script;
     script_seg.size = output_len;
     mol_seg_t output_code_hash = MolReader_Script_get_code_hash(&script_seg);
-    if (input_code_hash.size != 32)
+    if (input_code_hash.size != BLAKE2B_BLOCK_SIZE)
     {
         return ERROR_ENCODING;
     }
@@ -139,6 +179,7 @@ int verify_lock_attrs(uint8_t *input_lock_script, uint64_t input_len, uint8_t *o
         return ERROR_ENCODING;
     }
 
+    // Check hash type and code hash are same.
     if (memcmp(input_code_hash.ptr, output_code_hash.ptr, BLAKE2B_BLOCK_SIZE) != 0)
     {
         return ERROR_CODE_HASH_INCONSISTENT;
@@ -151,6 +192,7 @@ int verify_lock_attrs(uint8_t *input_lock_script, uint64_t input_len, uint8_t *o
     return CKB_SUCCESS;
 }
 
+// Verify the signature, the args "end" is used to denote how many output/output_data are hashed.
 int verify_sig_no_input(mol_seg_t lock_bytes_seg, uint8_t *input_pubkey, uint8_t *sig_verify, size_t end)
 {
     unsigned char witness[MAX_WITNESS_SIZE];
@@ -177,6 +219,7 @@ int verify_sig_no_input(mol_seg_t lock_bytes_seg, uint8_t *input_pubkey, uint8_t
     }
     blake2b_state blake2b_ctx;
     blake2b_init(&blake2b_ctx, BLAKE2B_BLOCK_SIZE);
+
     //load outputs.
     size_t i = 0;
     uint64_t len = 0;
@@ -231,13 +274,12 @@ int verify_sig_no_input(mol_seg_t lock_bytes_seg, uint8_t *input_pubkey, uint8_t
         }
     }
 
-    // Clear lock field to zero, then digest the first witness
+    // Clear signature field to zero, then digest the first witness
     memset((void *)(&lock_bytes_seg.ptr[LOCK_PREFIX_LENGTH]), 0, 2 * SIGNATURE_SIZE);
     blake2b_update(&blake2b_ctx, (char *)&witness_len, sizeof(uint64_t));
     blake2b_update(&blake2b_ctx, witness, witness_len);
 
     uint8_t temp[MAX_WITNESS_SIZE];
-
     unsigned char message[BLAKE2B_BLOCK_SIZE];
     blake2b_final(&blake2b_ctx, message, BLAKE2B_BLOCK_SIZE);
 
@@ -313,6 +355,7 @@ int verify_sig_all(mol_seg_t lock_bytes_seg, uint8_t *input_pubkey, uint8_t *sig
 
     blake2b_state blake2b_ctx;
     blake2b_init(&blake2b_ctx, BLAKE2B_BLOCK_SIZE);
+
     //load tx hash.
     uint64_t len = 0;
     unsigned char tx_hash[BLAKE2B_BLOCK_SIZE];
@@ -330,12 +373,13 @@ int verify_sig_all(mol_seg_t lock_bytes_seg, uint8_t *input_pubkey, uint8_t *sig
     //digest tx hash.
     blake2b_update(&blake2b_ctx, tx_hash, BLAKE2B_BLOCK_SIZE);
 
-    // Clear lock field to zero, then digest the first witness
+    // Clear signature to zero, then digest the first witness
     memset((void *)(&lock_bytes_seg.ptr[LOCK_PREFIX_LENGTH]), 0, 2 * SIGNATURE_SIZE);
     blake2b_update(&blake2b_ctx, (char *)&witness_len, sizeof(uint64_t));
     blake2b_update(&blake2b_ctx, witness, witness_len);
 
     uint8_t temp[MAX_WITNESS_SIZE];
+
     // Digest same group witnesses
     size_t i = 1;
     while (1)
@@ -358,6 +402,7 @@ int verify_sig_all(mol_seg_t lock_bytes_seg, uint8_t *input_pubkey, uint8_t *sig
         blake2b_update(&blake2b_ctx, temp, len);
         i += 1;
     }
+
     // Digest witnesses that not covered by inputs
     i = ckb_calculate_inputs_len();
     while (1)
@@ -430,16 +475,7 @@ int verify_sig_all(mol_seg_t lock_bytes_seg, uint8_t *input_pubkey, uint8_t *sig
     return CKB_SUCCESS;
 }
 
-int printf_hex_string(unsigned char *str, int len)
-{
-    printf("\n\n\1232131312312321:    ");
-    for (int i = 0; i < len; i++)
-    {
-        printf("%02x", str[i]);
-    }
-    return 0;
-}
-
+// Check the type script is consistent.
 int check_type_script(unsigned char *input_type_script_hash, size_t end)
 {
     unsigned char output_type_script_hash[HASH_SIZE];
@@ -485,7 +521,6 @@ int check_type_script(unsigned char *input_type_script_hash, size_t end)
 int main(int argc, char *argv[])
 {
     // load the witness!!!
-
     unsigned char witness[MAX_WITNESS_SIZE];
     uint64_t witness_len = MAX_WITNESS_SIZE;
     int ret = ckb_load_witness(witness, &witness_len, 0, 0, CKB_SOURCE_GROUP_INPUT);
@@ -497,28 +532,29 @@ int main(int argc, char *argv[])
     {
         return ERROR_WITNESS_SIZE;
     }
+
+    //Load args of lock.
     mol_seg_t lock_bytes_seg;
     ret = extract_witness_lock(witness, witness_len, &lock_bytes_seg);
     if (ret != 0)
     {
         return ERROR_ENCODING;
     }
-
     if (lock_bytes_seg.size != 2 * SIGNATURE_SIZE + LOCK_PREFIX_LENGTH)
     {
         return ERROR_ARGUMENTS_LEN;
     }
 
+    // Parse the witness.lock.
     uint8_t sig_A[SIGNATURE_SIZE], sig_B[SIGNATURE_SIZE], witness_id[ID_SIZE];
     uint8_t *gpc_witness = (uint8_t *)lock_bytes_seg.ptr;
     memcpy(witness_id, gpc_witness, ID_SIZE);
-    uint8_t flag = gpc_witness[16];
-    uint64_t *nounce_witness = (uint64_t *)&gpc_witness[17];
-    memcpy(sig_A, &gpc_witness[25], SIGNATURE_SIZE);
-    memcpy(sig_B, &gpc_witness[25 + SIGNATURE_SIZE], SIGNATURE_SIZE);
+    uint8_t flag = gpc_witness[ID_SIZE];
+    uint64_t *nounce_witness = (uint64_t *)&gpc_witness[ID_SIZE + FLAG_SIZE];
+    memcpy(sig_A, &gpc_witness[ID_SIZE + FLAG_SIZE + NOUNCE_SIZE], SIGNATURE_SIZE);
+    memcpy(sig_B, &gpc_witness[ID_SIZE + FLAG_SIZE + NOUNCE_SIZE + SIGNATURE_SIZE], SIGNATURE_SIZE);
 
-    // load the args about lock script in input.
-
+    // Load the args about lock script in input.
     unsigned char input_lock_script[SCRIPT_SIZE];
     uint64_t input_script_len = SCRIPT_SIZE;
     ret = ckb_load_cell_by_field(input_lock_script, &input_script_len, 0, 0, CKB_SOURCE_INPUT, CKB_CELL_FIELD_LOCK);
@@ -540,11 +576,12 @@ int main(int argc, char *argv[])
         return ERROR_ENCODING;
     }
 
-    // load type script hash.
+    // Load type script hash.
     unsigned char input_type_script_hash[HASH_SIZE];
     uint64_t script_hash_len = HASH_SIZE;
     ret = ckb_load_cell_by_field(input_type_script_hash, &script_hash_len, 0, 0, CKB_SOURCE_INPUT, CKB_CELL_FIELD_TYPE_HASH);
 
+    // Ret 2 means type script is nil, in this case we just set the type_script_hash to 0.
     if (ret == 2)
     {
         for (int i = 0; i < HASH_SIZE; i++)
@@ -561,23 +598,25 @@ int main(int argc, char *argv[])
         return ERROR_SYSCALL;
     }
 
-    //verify the type script is same!!
-
     // just compare the witness_id and input_id are same.
-
     if (memcmp(input_id, witness_id, ID_SIZE) != 0)
     {
         return ERROR_ID_INCONSISTENT;
     }
 
     // four cases:
-
     if (input_status == 0 && flag == 0)
     {
-        //verify the type scripts are same.
         ckb_debug("The good case!\n");
 
-        // lets verify the signature is right (normal signature).
+        // Check the type is consistent.
+        ret = check_type_script(input_type_script_hash, 2);
+        if (ret != CKB_SUCCESS)
+        {
+            return ret;
+        }
+
+        // lets verify the signature is right.
         ret = verify_sig_all(lock_bytes_seg, input_pubkey_A, sig_A);
         if (ret != CKB_SUCCESS)
         {
@@ -588,16 +627,11 @@ int main(int argc, char *argv[])
         {
             return ret;
         }
-
-        ret = check_type_script(input_type_script_hash, 2);
-        if (ret != CKB_SUCCESS)
-        {
-            return ret;
-        }
     }
     else if ((input_status == 0 && flag == 1) || (input_status == 1 && flag == 1))
     {
         ckb_debug("The bad/ugly case, one party just want to close the channel!\n");
+
         // lets load the output lock arg!
         unsigned char output_lock_script[SCRIPT_SIZE];
         uint64_t output_script_len = SCRIPT_SIZE;
@@ -610,44 +644,51 @@ int main(int argc, char *argv[])
         {
             return ERROR_SCRIPT_TOO_LONG;
         }
+
+        // Parse the lock script args.
         uint8_t output_status = 0, output_pubkey_A[BLAKE160_SIZE], output_pubkey_B[BLAKE160_SIZE], output_id[ID_SIZE];
         uint64_t output_lock_time = 0, output_nounce = 0;
         ret = parse_lock_args(output_lock_script, output_script_len, output_id, &output_status,
                               &output_lock_time, &output_nounce, output_pubkey_A, output_pubkey_B);
-        if (output_nounce <= input_nounce && output_nounce != 0)
+
+        // Check nounce is right.
+        // The output nounce should greater than input nounce.
+        if (output_nounce <= input_nounce)
         {
             return ERROR_NOUNCE_INVALID;
         }
 
+        // Check the id, note there is input and output id.
+        // The check above is input and witness.
         if (memcmp(input_id, output_id, ID_SIZE) != 0)
         {
             return ERROR_ID_INCONSISTENT;
         }
 
+        // Check type is consistent, only check the first output.
         ret = check_type_script(input_type_script_hash, 1);
         if (ret != CKB_SUCCESS)
         {
             return ret;
         }
 
+        // The output_status must be 1, since it begins to closing.
         if (output_status != 1)
         {
             return ERROR_STATUS_INVALID;
         }
+
+        // Check the pubkey is consistent.
         if ((memcmp(input_pubkey_A, output_pubkey_A, BLAKE160_SIZE) != 0) || (memcmp(input_pubkey_B, output_pubkey_B, BLAKE160_SIZE) != 0))
         {
             return ERROR_PUBKEY_INCONSISTENT;
         }
+
         // Verify the code hash and hash type is correct!
         ret = verify_lock_attrs(input_lock_script, input_script_len, output_lock_script, output_script_len);
         if (ret != CKB_SUCCESS)
         {
             return ret;
-        }
-        // Verify the output id is same as the input id.
-        if (memcmp(input_id, output_id, ID_SIZE != 0))
-        {
-            return ERROR_LOCK_ID_INCONSISTENT;
         }
 
         // Lets verify the signature (no-input signature).
@@ -664,9 +705,9 @@ int main(int argc, char *argv[])
     }
     else if (input_status == 1 && flag == 0)
     {
-        // check the since input.since == input.lock.arg.timeout.
         ckb_debug("The bad/ugly case, one party just want to settle this channel!\n");
-        // lets get the since!.
+
+        // Load the since.
         uint64_t input_since = 0, input_since_len = 8;
         ret = ckb_load_input_by_field(&input_since, &input_since_len, 0, 0,
                                       CKB_SOURCE_GROUP_INPUT, CKB_INPUT_FIELD_SINCE);
@@ -674,21 +715,26 @@ int main(int argc, char *argv[])
         {
             return ERROR_SYSCALL;
         }
+
+        // Check since is right.
         if (input_since != input_lock_time)
         {
             return ERROR_SINCE_INVALID;
         }
+
+        // Check nounce.
         if (input_nounce != *nounce_witness)
         {
             return ERROR_NOUNCE_INCONSISTENT;
         }
 
+        // Check type first 2 script.
         ret = check_type_script(input_type_script_hash, 2);
         if (ret != CKB_SUCCESS)
         {
             return ret;
         }
-        
+
         // Lets verify the signature. (no-input signature.)
         ret = verify_sig_no_input(lock_bytes_seg, input_pubkey_A, sig_A, 2);
         if (ret != CKB_SUCCESS)
